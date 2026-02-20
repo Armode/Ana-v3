@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Pro Chatbot",
+  "description": "A sophisticated AI-powered chatbot interface using the Gemini 3 Pro model, featuring real-time streaming responses, markdown support, and a sleek, modern UI.",
+  "requestFramePermissions": []
+}
