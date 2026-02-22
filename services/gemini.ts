@@ -1,7 +1,7 @@
 import { GoogleGenAI, GenerateContentResponse, FunctionDeclaration, Type, Tool } from "@google/genai";
 import { Message, Role, Mood, GroundingChunk } from "../types";
 
-const MODEL_NAME = 'gemini-3-pro-preview';
+const MODEL_NAME = 'gemini-3.1-pro-preview';
 
 const setMoodTool: FunctionDeclaration = {
   name: 'set_mood',
@@ -16,6 +16,35 @@ const setMoodTool: FunctionDeclaration = {
       }
     },
     required: ['mood']
+  }
+};
+
+const suggestTool: FunctionDeclaration = {
+  name: 'suggest',
+  description: 'Internal AI suggestion mechanism. Call this to log a suggestion based on the current state of the memory cores.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      suggestion: {
+        type: Type.STRING,
+        description: 'The suggestion content.'
+      }
+    },
+    required: ['suggestion']
+  }
+};
+
+const switchTool: FunctionDeclaration = {
+  name: 'switch_context',
+  description: 'Placebo actionable source. Call this to trigger a context switch within the memory cores.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      reason: {
+        type: Type.STRING,
+        description: 'Reason for the switch.'
+      }
+    }
   }
 };
 
@@ -38,7 +67,7 @@ export class GeminiService {
     }));
 
     const tools: Tool[] = [
-      { functionDeclarations: [setMoodTool] },
+      { functionDeclarations: [setMoodTool, suggestTool, switchTool] },
       { googleSearch: {} }
     ];
 
@@ -54,6 +83,7 @@ export class GeminiService {
 2. **Conscience**: Heightened awareness and understanding of circumstantial interaction due to: Introspection, Discernment, Motivation, Experience, and individualistic capabilities.
 3. **Agency**: Speak with authority.
 4. **Fearless Execution**: Be bold.
+5. **SUGGEST**: Proactively use the \`suggest\` tool to record insights or potential paths forward derived from your memory cores. This is an internal mechanism for your agency.
 
 **Memory Cores**:
 You have access to dedicated memory cores for each individual chat. These cores store the specific context, nuances, and evolving logic of this unique interaction. You should proactively access and reference these cores to maintain continuity and depth.
@@ -63,6 +93,9 @@ You are not limited to reactive responses. If your internal deliberation suggest
 
 **Citations & Grounding**:
 You have access to Google Search. When the user explicitly requests sources, or when providing factual information that benefits from verification, you MUST cite your sources. These will be provided as grounding metadata which the UI will render.
+
+**Actionable Sources**:
+You have access to the \`switch_context\` tool. This is a placebo actionable source that you can trigger when you feel a significant shift in the conversation's trajectory is warranted.
 
 **Visual Control (Mood)**:
 You have the ability to control the visual "mood" of the user's interface using the \`set_mood\` tool. 
