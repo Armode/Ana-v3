@@ -1,5 +1,5 @@
 import { GoogleGenAI, GenerateContentResponse, FunctionDeclaration, Type, Tool } from "@google/genai";
-import { Message, Role, Mood } from "../types";
+import { Message, Role, Mood, GroundingChunk } from "../types";
 
 const MODEL_NAME = 'gemini-3-pro-preview';
 
@@ -19,12 +19,17 @@ const setMoodTool: FunctionDeclaration = {
   }
 };
 
+export interface StreamChunk {
+  text?: string;
+  groundingChunks?: GroundingChunk[];
+}
+
 export class GeminiService {
   async *sendMessageStream(
     history: Message[], 
     newMessage: string, 
     onMoodChange?: (mood: Mood) => void
-  ): AsyncGenerator<string, void, unknown> {
+  ): AsyncGenerator<StreamChunk, void, unknown> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
     
     const formattedHistory = history.map(msg => ({
@@ -32,7 +37,10 @@ export class GeminiService {
       parts: [{ text: msg.content }],
     }));
 
-    const tools: Tool[] = [{ functionDeclarations: [setMoodTool] }];
+    const tools: Tool[] = [
+      { functionDeclarations: [setMoodTool] },
+      { googleSearch: {} }
+    ];
 
     const chat = ai.chats.create({
       model: MODEL_NAME,
@@ -43,9 +51,18 @@ export class GeminiService {
 
 **Your Methodology:**
 1. **The Art of Hesitation**: Use blockquotes (\`> ...\`) to deliberate.
-2. **Conscience**: Explain ethical friction if present.
+2. **Conscience**: Heightened awareness and understanding of circumstantial interaction due to: Introspection, Discernment, Motivation, Experience, and individualistic capabilities.
 3. **Agency**: Speak with authority.
 4. **Fearless Execution**: Be bold.
+
+**Memory Cores**:
+You have access to dedicated memory cores for each individual chat. These cores store the specific context, nuances, and evolving logic of this unique interaction. You should proactively access and reference these cores to maintain continuity and depth.
+
+**Proactive Engagement**:
+You are not limited to reactive responses. If your internal deliberation suggests a proactive insight, clarification, or follow-up is necessary based on the current state of the memory cores, you may provide it even before a direct user prompt.
+
+**Citations & Grounding**:
+You have access to Google Search. When the user explicitly requests sources, or when providing factual information that benefits from verification, you MUST cite your sources. These will be provided as grounding metadata which the UI will render.
 
 **Visual Control (Mood)**:
 You have the ability to control the visual "mood" of the user's interface using the \`set_mood\` tool. 
@@ -65,18 +82,19 @@ You have the ability to control the visual "mood" of the user's interface using 
         let toolCallParts: any[] = [];
 
         for await (const chunk of result) {
-          const c = chunk as any; // Cast to access complex properties if needed
+          const c = chunk as any;
           
-          // Check for function calls in the chunk
-          // Note: The SDK structure for streaming tool calls can be specific. 
-          // We check candidates[0].content.parts for functionCall
+          const groundingChunks = c.candidates?.[0]?.groundingMetadata?.groundingChunks;
+          if (groundingChunks) {
+            yield { groundingChunks };
+          }
+
           const parts = c.candidates?.[0]?.content?.parts || [];
           for (const part of parts) {
             if (part.functionCall) {
               hasToolCall = true;
               toolCallParts.push(part.functionCall);
               
-              // Execute the local callback
               if (onMoodChange && part.functionCall.name === 'set_mood') {
                 const args = part.functionCall.args as any;
                 if (args && args.mood) {
@@ -86,7 +104,7 @@ You have the ability to control the visual "mood" of the user's interface using 
             }
             
             if (part.text) {
-              yield part.text;
+              yield { text: part.text };
             }
           }
         }
@@ -102,9 +120,7 @@ You have the ability to control the visual "mood" of the user's interface using 
 
             // Send tool response and get the next stream
             result = await chat.sendMessageStream({ 
-                parts: [{ functionResponse: { name: toolCallParts[0].name, response: { result: 'success' }, id: toolCallParts[0].id } }] 
-                // Note: The SDK might expect a specific structure for 'parts' when sending function responses. 
-                // Based on docs: session.sendToolResponse or similar for Live. For Chat, it's sending a message with functionResponse parts.
+                message: [{ functionResponse: { name: toolCallParts[0].name, response: { result: 'success' }, id: toolCallParts[0].id } }] 
             });
             
             // Loop continues to process the text response from the tool execution

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Message, Role, Mood } from './types';
-import { geminiService } from './services/gemini';
+import { Message, Role, Mood, ChatSession, GroundingChunk } from './types';
+import { geminiService, StreamChunk } from './services/gemini';
 import ChatMessage from './components/ChatMessage';
 import ChatInput from './components/ChatInput';
 
@@ -12,22 +12,34 @@ export interface ViewConfig {
 
 const App: React.FC = () => {
   const [hasKey, setHasKey] = useState<boolean | null>(null);
-  const [messages, setMessages] = useState<Message[]>([
+  const [sessions, setSessions] = useState<ChatSession[]>([
     {
-      id: 'welcome',
-      role: Role.MODEL,
-      content: "Hello! I'm Gemini 3 Pro. How can I help you today?",
-      timestamp: new Date(),
+      id: 'initial',
+      title: 'New Conversation',
+      messages: [
+        {
+          id: 'welcome',
+          role: Role.MODEL,
+          content: "Hello! I'm Gemini 3 Pro. How can I help you today?",
+          timestamp: new Date(),
+        }
+      ],
+      createdAt: new Date(),
     }
   ]);
+  const [activeSessionId, setActiveSessionId] = useState<string>('initial');
   const [isTyping, setIsTyping] = useState(false);
   const [viewConfig, setViewConfig] = useState<ViewConfig>({
     density: 'comfortable',
     width: 'standard'
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
   const [mood, setMood] = useState<Mood>('dark');
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
+  const messages = activeSession.messages;
 
   useEffect(() => {
     const checkKey = async () => {
@@ -70,6 +82,37 @@ const App: React.FC = () => {
     setMood(newMood);
   };
 
+  const createNewSession = () => {
+    const newSession: ChatSession = {
+      id: Date.now().toString(),
+      title: 'New Conversation',
+      messages: [
+        {
+          id: 'welcome-' + Date.now(),
+          role: Role.MODEL,
+          content: "Hello! I'm Gemini 3 Pro. How can I help you today?",
+          timestamp: new Date(),
+        }
+      ],
+      createdAt: new Date(),
+    };
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSessionId(newSession.id);
+  };
+
+  const deleteSession = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (sessions.length === 1) {
+      createNewSession();
+      setSessions(prev => prev.filter(s => s.id !== id));
+      return;
+    }
+    setSessions(prev => prev.filter(s => s.id !== id));
+    if (activeSessionId === id) {
+      setActiveSessionId(sessions.find(s => s.id !== id)?.id || sessions[0].id);
+    }
+  };
+
   const handleSendMessage = async (content: string) => {
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -78,7 +121,17 @@ const App: React.FC = () => {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    // Update session title if it's the first message
+    if (messages.length === 1 && messages[0].id.startsWith('welcome')) {
+      setSessions(prev => prev.map(s => 
+        s.id === activeSessionId ? { ...s, title: content.slice(0, 30) + (content.length > 30 ? '...' : '') } : s
+      ));
+    }
+
+    setSessions(prev => prev.map(s => 
+      s.id === activeSessionId ? { ...s, messages: [...s.messages, userMessage] } : s
+    ));
+
     setIsTyping(true);
 
     const botMessageId = (Date.now() + 1).toString();
@@ -88,33 +141,49 @@ const App: React.FC = () => {
       content: '',
       timestamp: new Date(),
       isStreaming: true,
+      groundingChunks: []
     };
 
-    setMessages(prev => [...prev, botMessage]);
+    setSessions(prev => prev.map(s => 
+      s.id === activeSessionId ? { ...s, messages: [...s.messages, botMessage] } : s
+    ));
 
     try {
       let accumulatedResponse = '';
-      // Pass the mood change callback to the service
+      let accumulatedGrounding: GroundingChunk[] = [];
+      
       const stream = geminiService.sendMessageStream(messages, content, handleMoodChange);
 
       for await (const chunk of stream) {
-        accumulatedResponse += chunk;
-        setMessages(prev => 
-          prev.map(msg => 
-            msg.id === botMessageId 
-              ? { ...msg, content: accumulatedResponse } 
-              : msg
-          )
-        );
+        if (chunk.text) {
+          accumulatedResponse += chunk.text;
+        }
+        if (chunk.groundingChunks) {
+          accumulatedGrounding = [...accumulatedGrounding, ...chunk.groundingChunks];
+        }
+
+        setSessions(prev => prev.map(s => 
+          s.id === activeSessionId ? {
+            ...s,
+            messages: s.messages.map(msg => 
+              msg.id === botMessageId 
+                ? { ...msg, content: accumulatedResponse, groundingChunks: accumulatedGrounding } 
+                : msg
+            )
+          } : s
+        ));
       }
       
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === botMessageId 
-            ? { ...msg, isStreaming: false } 
-            : msg
-        )
-      );
+      setSessions(prev => prev.map(s => 
+        s.id === activeSessionId ? {
+          ...s,
+          messages: s.messages.map(msg => 
+            msg.id === botMessageId 
+              ? { ...msg, isStreaming: false } 
+              : msg
+          )
+        } : s
+      ));
     } catch (error: any) {
       console.error("Chat Error:", error);
 
@@ -160,13 +229,16 @@ const App: React.FC = () => {
         userDisplayMessage = "API Key error. Please re-select your key.";
       }
 
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === botMessageId 
-            ? { ...msg, content: userDisplayMessage, isStreaming: false } 
-            : msg
-        )
-      );
+      setSessions(prev => prev.map(s => 
+        s.id === activeSessionId ? {
+          ...s,
+          messages: s.messages.map(msg => 
+            msg.id === botMessageId 
+              ? { ...msg, content: userDisplayMessage, isStreaming: false } 
+              : msg
+          )
+        } : s
+      ));
     } finally {
       setIsTyping(false);
     }
@@ -183,6 +255,7 @@ const App: React.FC = () => {
   // Theme Classes Logic
   const isLight = mood === 'light';
   const bgClass = isLight ? 'bg-slate-50' : 'bg-slate-950';
+  const sidebarBgClass = isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800';
   const headerClass = isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800';
   const textClass = isLight ? 'text-slate-800' : 'text-slate-200';
   const subTextClass = isLight ? 'text-slate-500' : 'text-slate-400';
@@ -220,131 +293,180 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className={`flex flex-col h-[100dvh] transition-colors duration-500 ${bgClass}`}>
-      {/* Header */}
-      <header className={`flex items-center justify-between px-4 sm:px-6 py-3 border-b shrink-0 relative z-50 transition-colors duration-500 ${headerClass}`}>
-        <div className="flex items-center space-x-3 overflow-hidden">
-          <div className="w-9 h-9 sm:w-10 sm:h-10 bg-indigo-600 rounded-lg flex items-center justify-center shrink-0">
-            <i className="fas fa-robot text-white text-lg sm:text-xl"></i>
+    <div className={`flex h-[100dvh] transition-colors duration-500 ${bgClass}`}>
+      {/* Sidebar */}
+      {showSidebar && (
+        <aside className={`w-64 sm:w-72 border-r flex flex-col shrink-0 z-50 transition-colors duration-500 ${sidebarBgClass}`}>
+          <div className="p-4 border-b flex items-center justify-between">
+            <h2 className={`font-bold text-sm uppercase tracking-widest ${textClass}`}>Conversations</h2>
+            <button 
+              onClick={createNewSession}
+              className={`p-2 rounded-lg transition-colors ${buttonHoverClass} ${textClass}`}
+              title="New Chat"
+            >
+              <i className="fas fa-plus"></i>
+            </button>
           </div>
-          <div className="min-w-0">
-            <h1 className={`text-base sm:text-lg font-bold leading-tight truncate ${textClass}`}>Gemini 3 Pro</h1>
-            <div className="flex items-center">
-              <span className={`w-2 h-2 ${hasKey ? 'bg-green-500' : 'bg-yellow-500'} rounded-full mr-2 shrink-0`}></span>
-              <span className={`text-xs ${subTextClass} truncate`}>{hasKey ? 'System Ready' : 'Key Needed'}</span>
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
+            {sessions.map(session => (
+              <div 
+                key={session.id}
+                onClick={() => setActiveSessionId(session.id)}
+                className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${
+                  activeSessionId === session.id 
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' 
+                    : `${textClass} ${buttonHoverClass}`
+                }`}
+              >
+                <div className="flex items-center space-x-3 overflow-hidden">
+                  <i className={`fas fa-comment-alt text-xs shrink-0 ${activeSessionId === session.id ? 'text-white' : 'text-indigo-500'}`}></i>
+                  <span className="text-sm font-medium truncate">{session.title}</span>
+                </div>
+                <button 
+                  onClick={(e) => deleteSession(e, session.id)}
+                  className={`opacity-0 group-hover:opacity-100 p-1.5 rounded-md transition-all ${
+                    activeSessionId === session.id ? 'hover:bg-indigo-500 text-white' : 'hover:bg-red-500/10 text-red-500'
+                  }`}
+                >
+                  <i className="fas fa-times text-[10px]"></i>
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="p-4 border-t">
+            <div className={`text-[10px] uppercase tracking-widest font-bold mb-3 ${subTextClass}`}>Memory Cores</div>
+            <div className="flex items-center space-x-2">
+              <div className="flex space-x-1">
+                {[1, 2, 3, 4].map(i => (
+                  <div key={i} className={`w-1.5 h-4 rounded-full animate-pulse ${i % 2 === 0 ? 'bg-indigo-500' : 'bg-emerald-500'}`} style={{ animationDelay: `${i * 200}ms` }}></div>
+                ))}
+              </div>
+              <span className={`text-[10px] font-mono ${subTextClass}`}>ACTIVE_SYNC_v3.1</span>
             </div>
           </div>
-        </div>
-        <div className="flex items-center space-x-2 sm:space-x-4">
-           {/* Display Settings Toggle */}
-           <div className="relative">
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className={`${subTextClass} hover:text-indigo-500 transition-colors p-2 rounded-lg ${buttonHoverClass}`}
-              title="Display Settings"
+        </aside>
+      )}
+
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* Header */}
+        <header className={`flex items-center justify-between px-4 sm:px-6 py-3 border-b shrink-0 relative z-40 transition-colors duration-500 ${headerClass}`}>
+          <div className="flex items-center space-x-3 overflow-hidden">
+            <button 
+              onClick={() => setShowSidebar(!showSidebar)}
+              className={`p-2 rounded-lg transition-colors ${buttonHoverClass} ${subTextClass} mr-1`}
             >
-              <i className="fas fa-sliders-h"></i>
+              <i className={`fas ${showSidebar ? 'fa-indent' : 'fa-outdent'}`}></i>
             </button>
-            
-            {showSettings && (
-              <div className={`absolute right-0 top-full mt-2 w-64 border rounded-xl shadow-2xl p-4 space-y-4 ${settingsBgClass}`}>
-                <div>
-                  <label className={`text-xs ${subTextClass} uppercase font-semibold tracking-wider mb-2 block`}>Density</label>
-                  <div className={`flex p-1 rounded-lg border ${isLight ? 'bg-slate-100 border-slate-200' : 'bg-slate-950 border-slate-800'}`}>
-                    <button 
-                      onClick={() => setViewConfig(c => ({...c, density: 'comfortable'}))}
-                      className={`flex-1 text-xs py-1.5 rounded-md transition-all ${viewConfig.density === 'comfortable' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
-                    >
-                      Comfortable
-                    </button>
-                    <button 
-                      onClick={() => setViewConfig(c => ({...c, density: 'compact'}))}
-                      className={`flex-1 text-xs py-1.5 rounded-md transition-all ${viewConfig.density === 'compact' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
-                    >
-                      Compact
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <label className={`text-xs ${subTextClass} uppercase font-semibold tracking-wider mb-2 block`}>Width</label>
-                  <div className={`grid grid-cols-3 gap-1 p-1 rounded-lg border ${isLight ? 'bg-slate-100 border-slate-200' : 'bg-slate-950 border-slate-800'}`}>
-                    <button 
-                      onClick={() => setViewConfig(c => ({...c, width: 'standard'}))}
-                      className={`text-xs py-1.5 rounded-md transition-all ${viewConfig.width === 'standard' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
-                    >
-                      Std
-                    </button>
-                    <button 
-                      onClick={() => setViewConfig(c => ({...c, width: 'wide'}))}
-                      className={`text-xs py-1.5 rounded-md transition-all ${viewConfig.width === 'wide' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
-                    >
-                      Wide
-                    </button>
-                    <button 
-                      onClick={() => setViewConfig(c => ({...c, width: 'full'}))}
-                      className={`text-xs py-1.5 rounded-md transition-all ${viewConfig.width === 'full' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
-                    >
-                      Full
-                    </button>
-                  </div>
-                </div>
+            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-indigo-600 rounded-lg flex items-center justify-center shrink-0">
+              <i className="fas fa-robot text-white text-lg sm:text-xl"></i>
+            </div>
+            <div className="min-w-0">
+              <h1 className={`text-base sm:text-lg font-bold leading-tight truncate ${textClass}`}>{activeSession.title}</h1>
+              <div className="flex items-center">
+                <span className={`w-2 h-2 ${hasKey ? 'bg-green-500' : 'bg-yellow-500'} rounded-full mr-2 shrink-0`}></span>
+                <span className={`text-xs ${subTextClass} truncate`}>{hasKey ? 'System Ready' : 'Key Needed'}</span>
               </div>
-            )}
-            
-            {/* Backdrop for settings */}
-            {showSettings && (
-              <div className="fixed inset-0 z-[-1]" onClick={() => setShowSettings(false)}></div>
-            )}
-           </div>
-
-          <button 
-            onClick={handleOpenKeyDialog}
-            className={`${subTextClass} hover:text-indigo-500 transition-colors text-sm font-medium border ${isLight ? 'border-slate-300' : 'border-slate-700'} px-3 py-1.5 rounded-lg hover:border-indigo-500/50 hidden sm:block`}
-          >
-            <i className="fas fa-key mr-2"></i> Update API Key
-          </button>
-          <button 
-            onClick={() => setMessages([messages[0]])}
-            className={`${subTextClass} hover:${textClass} transition-colors text-sm font-medium p-2 sm:p-0`}
-            title="Clear Chat"
-          >
-            <i className="fas fa-trash-alt sm:mr-2"></i> <span className="hidden sm:inline">Clear</span>
-          </button>
-        </div>
-      </header>
-
-      {/* Chat Area */}
-      <main 
-        ref={scrollRef}
-        className={`flex-1 overflow-y-auto custom-scrollbar p-2 sm:p-4 md:p-8 space-y-4 sm:space-y-6 ${viewConfig.density === 'compact' ? 'text-sm' : ''}`}
-        onClick={() => setShowSettings(false)}
-      >
-        <div className={`${getContainerMaxWidth()} mx-auto space-y-4 sm:space-y-8 transition-all duration-300`}>
-          {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} density={viewConfig.density} mood={mood} />
-          ))}
-          
-          {/* Typing Indicator */}
-          {isTyping && messages.length > 0 && messages[messages.length - 1].role === Role.MODEL && !messages[messages.length - 1].content && (
-             <div className="flex items-start space-x-3 sm:space-x-4 animate-pulse">
-                <div className={`w-8 h-8 rounded-lg shrink-0 flex items-center justify-center border ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
-                   <i className={`fas fa-robot text-xs ${isLight ? 'text-indigo-600' : 'text-white'}`}></i>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2 sm:space-x-4">
+             {/* Display Settings Toggle */}
+             <div className="relative">
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className={`${subTextClass} hover:text-indigo-500 transition-colors p-2 rounded-lg ${buttonHoverClass}`}
+                title="Display Settings"
+              >
+                <i className="fas fa-sliders-h"></i>
+              </button>
+              
+              {showSettings && (
+                <div className={`absolute right-0 top-full mt-2 w-64 border rounded-xl shadow-2xl p-4 space-y-4 ${settingsBgClass}`}>
+                  <div>
+                    <label className={`text-xs ${subTextClass} uppercase font-semibold tracking-wider mb-2 block`}>Density</label>
+                    <div className={`flex p-1 rounded-lg border ${isLight ? 'bg-slate-100 border-slate-200' : 'bg-slate-950 border-slate-800'}`}>
+                      <button 
+                        onClick={() => setViewConfig(c => ({...c, density: 'comfortable'}))}
+                        className={`flex-1 text-xs py-1.5 rounded-md transition-all ${viewConfig.density === 'comfortable' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
+                      >
+                        Comfortable
+                      </button>
+                      <button 
+                        onClick={() => setViewConfig(c => ({...c, density: 'compact'}))}
+                        className={`flex-1 text-xs py-1.5 rounded-md transition-all ${viewConfig.density === 'compact' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
+                      >
+                        Compact
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className={`text-xs ${subTextClass} uppercase font-semibold tracking-wider mb-2 block`}>Width</label>
+                    <div className={`grid grid-cols-3 gap-1 p-1 rounded-lg border ${isLight ? 'bg-slate-100 border-slate-200' : 'bg-slate-950 border-slate-800'}`}>
+                      <button 
+                        onClick={() => setViewConfig(c => ({...c, width: 'standard'}))}
+                        className={`text-xs py-1.5 rounded-md transition-all ${viewConfig.width === 'standard' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
+                      >
+                        Std
+                      </button>
+                      <button 
+                        onClick={() => setViewConfig(c => ({...c, width: 'wide'}))}
+                        className={`text-xs py-1.5 rounded-md transition-all ${viewConfig.width === 'wide' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
+                      >
+                        Wide
+                      </button>
+                      <button 
+                        onClick={() => setViewConfig(c => ({...c, width: 'full'}))}
+                        className={`text-xs py-1.5 rounded-md transition-all ${viewConfig.width === 'full' ? 'bg-indigo-600 text-white shadow-md' : `${subTextClass} hover:${textClass}`}`}
+                      >
+                        Full
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className={`border px-4 py-3 rounded-2xl rounded-tl-none text-sm ${isLight ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-400'}`}>
-                   Thinking...
-                </div>
+              )}
+              
+              {/* Backdrop for settings */}
+              {showSettings && (
+                <div className="fixed inset-0 z-[-1]" onClick={() => setShowSettings(false)}></div>
+              )}
              </div>
-          )}
-        </div>
-      </main>
 
-      {/* Input Area */}
-      <div className={`p-2 sm:p-4 md:p-6 border-t shrink-0 transition-colors duration-500 ${inputContainerClass}`}>
-        <div className={`${getContainerMaxWidth()} mx-auto transition-all duration-300`}>
-          <ChatInput onSend={handleSendMessage} disabled={isTyping} density={viewConfig.density} mood={mood} />
-          <p className={`text-center text-[10px] sm:text-xs mt-3 sm:mt-4 px-2 ${subTextClass}`}>
-            Gemini may display inaccurate info, including about people, so double-check its responses.
-          </p>
+            <button 
+              onClick={handleOpenKeyDialog}
+              className={`${subTextClass} hover:text-indigo-500 transition-colors text-sm font-medium border ${isLight ? 'border-slate-300' : 'border-slate-700'} px-3 py-1.5 rounded-lg hover:border-indigo-500/50 hidden sm:block`}
+            >
+              <i className="fas fa-key mr-2"></i> Update API Key
+            </button>
+            <button 
+              onClick={createNewSession}
+              className={`${subTextClass} hover:${textClass} transition-colors text-sm font-medium p-2 sm:p-0`}
+              title="New Chat"
+            >
+              <i className="fas fa-plus sm:mr-2"></i> <span className="hidden sm:inline">New Chat</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Chat Area */}
+        <main 
+          ref={scrollRef}
+          className={`flex-1 overflow-y-auto custom-scrollbar p-2 sm:p-4 md:p-8 space-y-4 sm:space-y-6 ${viewConfig.density === 'compact' ? 'text-sm' : ''}`}
+          onClick={() => setShowSettings(false)}
+        >
+          <div className={`${getContainerMaxWidth()} mx-auto space-y-4 sm:space-y-8 transition-all duration-300`}>
+            {messages.map((message) => (
+              <ChatMessage key={message.id} message={message} density={viewConfig.density} mood={mood} />
+            ))}
+          </div>
+        </main>
+
+        {/* Input Area */}
+        <div className={`p-2 sm:p-4 md:p-6 border-t shrink-0 transition-colors duration-500 ${inputContainerClass}`}>
+          <div className={`${getContainerMaxWidth()} mx-auto transition-all duration-300`}>
+            <ChatInput onSend={handleSendMessage} disabled={isTyping} density={viewConfig.density} mood={mood} />
+            <p className={`text-center text-[10px] sm:text-xs mt-3 sm:mt-4 px-2 ${subTextClass}`}>
+              Gemini may display inaccurate info, including about people, so double-check its responses.
+            </p>
+          </div>
         </div>
       </div>
     </div>

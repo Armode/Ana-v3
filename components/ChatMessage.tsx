@@ -30,6 +30,16 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, density, mood }) => 
   const codeText = isLight ? 'text-slate-600' : 'text-slate-400';
 
   const renderContent = () => {
+    if (message.role === Role.MODEL && !message.content && message.isStreaming) {
+      return (
+        <div className="flex items-center space-x-1 h-6">
+          <div className={`w-2 h-2 rounded-full animate-bounce ${isLight ? 'bg-slate-400' : 'bg-slate-500'}`} style={{ animationDelay: '0ms' }}></div>
+          <div className={`w-2 h-2 rounded-full animate-bounce ${isLight ? 'bg-slate-400' : 'bg-slate-500'}`} style={{ animationDelay: '150ms' }}></div>
+          <div className={`w-2 h-2 rounded-full animate-bounce ${isLight ? 'bg-slate-400' : 'bg-slate-500'}`} style={{ animationDelay: '300ms' }}></div>
+        </div>
+      );
+    }
+
     // Regex to split by code blocks: ```lang\ncode```
     const parts = message.content.split(/```([a-zA-Z0-9+#\-\.]*)\n([\s\S]*?)```/g);
 
@@ -116,6 +126,33 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, density, mood }) => 
         <span className={`text-[10px] mt-1 uppercase tracking-wider font-semibold opacity-70 ${timeColor}`}>
           {new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' }).format(message.timestamp)}
         </span>
+        
+        {/* Grounding / Citations */}
+        {message.groundingChunks && message.groundingChunks.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-slate-200/10 w-full">
+            <div className={`text-[10px] uppercase tracking-widest font-bold mb-2 ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+              Sources & Citations
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {message.groundingChunks.map((chunk, idx) => chunk.web && (
+                <a 
+                  key={idx}
+                  href={chunk.web.uri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`flex items-center space-x-2 text-[11px] px-2 py-1 rounded-md border transition-all ${
+                    isLight 
+                      ? 'bg-slate-50 border-slate-200 text-indigo-600 hover:bg-slate-100' 
+                      : 'bg-slate-800 border-slate-700 text-indigo-400 hover:bg-slate-700'
+                  }`}
+                >
+                  <i className="fas fa-link text-[9px]"></i>
+                  <span className="truncate max-w-[150px]">{chunk.web.title || 'Source'}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
