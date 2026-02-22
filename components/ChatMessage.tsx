@@ -1,7 +1,7 @@
-
 import React from 'react';
 import { Message, Role, Mood } from '../types';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 
 // Declare global hljs from the script tag
 declare const hljs: any;
@@ -48,7 +48,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, density, mood }) => 
         // Text part
         if (!part) return null;
         
-        const htmlContent = marked.parse(part) as string;
+        const htmlContent = DOMPurify.sanitize(marked.parse(part) as string);
         
         return (
            <div 
